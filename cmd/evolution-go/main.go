@@ -17,7 +17,6 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gomessguii/logger"
 	"github.com/joho/godotenv"
-	"go.mau.fi/whatsmeow"
 	"gorm.io/gorm"
 	_ "modernc.org/sqlite"
 
@@ -83,8 +82,10 @@ func init() {
 }
 
 func setupRouter(db *gorm.DB, authDB *sql.DB, sqliteDB *sql.DB, config *config.Config, conn *amqp.Connection, exPath string, runtimeCtx *core.RuntimeContext) *gin.Engine {
-	killChannel := make(map[string](chan bool))
-	clientPointer := make(map[string]*whatsmeow.Client)
+	// Registries thread-safe compartilhados: UMA única fonte de estado para
+	// todos os serviços (corrige o crash "concurrent map read and map write").
+	killChannel := whatsmeow_service.NewKillRegistry()
+	clientPointer := whatsmeow_service.NewClientRegistry()
 
 	loggerWrapper := logger_wrapper.NewLoggerManager(config)
 

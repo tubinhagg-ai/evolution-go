@@ -60,6 +60,11 @@ type Config struct {
 	EventIgnoreGroup     bool
 	EventIgnoreStatus    bool
 	QrcodeMaxCount       int
+	StartupRecoveryConcurrency int
+	StartupRecoveryDelayMs     int
+	StartupRecoveryAllowlist   []string
+	DashoneBootAllowlistUrl    string
+	DashoneBootAllowlistKey    string
 	CheckUserExists      bool
 
 	// Logger configurations
@@ -299,6 +304,31 @@ func Load() *Config {
 		qrMaxCount, _ = strconv.Atoi(qrcodeMaxCount)
 	}
 
+	startupRecoveryConcurrency := 2 // default: 2 simultaneous whatsmeow handshakes
+	if v := os.Getenv(config_env.STARTUP_RECOVERY_CONCURRENCY); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 1 {
+			startupRecoveryConcurrency = n
+		}
+	}
+
+	startupRecoveryDelayMs := 4000 // default: 4s stagger between instance recoveries
+	if v := os.Getenv(config_env.STARTUP_RECOVERY_DELAY_MS); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 500 {
+			startupRecoveryDelayMs = n
+		}
+	}
+
+	// Allowlist explicita (CSV) de instancias que o boot PODE reconectar.
+	// Fonte primaria de seguranca: se definida, somente essas instancias voltam.
+	startupRecoveryAllowlist := []string{}
+	for _, v := range strings.Split(os.Getenv(config_env.STARTUP_RECOVERY_ALLOWLIST), ",") {
+		if v = strings.TrimSpace(v); v != "" {
+			startupRecoveryAllowlist = append(startupRecoveryAllowlist, v)
+		}
+	}
+	dashoneBootAllowlistUrl := strings.TrimRight(os.Getenv(config_env.DASHONE_BOOT_ALLOWLIST_URL), "/")
+	dashoneBootAllowlistKey := os.Getenv(config_env.DASHONE_BOOT_ALLOWLIST_KEY)
+
 	amqpGlobalEvents := strings.Split(os.Getenv(config_env.AMQP_GLOBAL_EVENTS), ",")
 	if len(amqpGlobalEvents) == 1 && amqpGlobalEvents[0] == "" {
 		amqpGlobalEvents = []string{}
@@ -374,6 +404,11 @@ func Load() *Config {
 		EventIgnoreGroup:     eventIgnoreGroup == "true",
 		EventIgnoreStatus:    eventIgnoreStatus == "true",
 		QrcodeMaxCount:       qrMaxCount,
+		StartupRecoveryConcurrency: startupRecoveryConcurrency,
+		StartupRecoveryDelayMs:     startupRecoveryDelayMs,
+		StartupRecoveryAllowlist:   startupRecoveryAllowlist,
+		DashoneBootAllowlistUrl:    dashoneBootAllowlistUrl,
+		DashoneBootAllowlistKey:    dashoneBootAllowlistKey,
 		CheckUserExists:      checkUserExists != "false", // Default true, set to false to disable
 		AmqpGlobalEvents:     amqpGlobalEvents,
 		AmqpSpecificEvents:   amqpSpecificEvents,
