@@ -80,6 +80,7 @@ type clientVersion struct {
 type whatsmeowService struct {
 	instanceRepository instance_repository.InstanceRepository
 	authDB             *sql.DB
+	authContainer      *sqlstore.Container
 	messageRepository  message_repository.MessageRepository
 	labelRepository    label_repository.LabelRepository
 	pollService        poll_service.PollService // NOVO: Serviço de enquetes
@@ -341,26 +342,26 @@ func (w whatsmeowService) StartClient(cd *ClientData) {
 
 	var container *sqlstore.Container
 
-	if w.config.WaDebug != "" {
-		dbLog := waLog.Stdout("Database", w.config.WaDebug, true)
-		if w.config.PostgresAuthDB != "" {
-			container, err = sqlstore.New(context.Background(), "postgres", w.config.PostgresAuthDB, dbLog)
-		} else {
-			dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
-			container, err = sqlstore.New(context.Background(), "sqlite", dsn, dbLog)
+	// PostgreSQL: reuse ONE sqlstore container backed by the service authDB.
+	// Creating sqlstore.New on every StartClient/reconnect creates a new
+	// database/sql pool and exhausts PostgreSQL connections over time.
+	if w.config.PostgresAuthDB != "" {
+		container = w.authContainer
+		if container == nil {
+			w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Shared PostgreSQL auth container is not initialized", cd.Instance.Id)
+			return
 		}
 	} else {
-		if w.config.PostgresAuthDB != "" {
-			container, err = sqlstore.New(context.Background(), "postgres", w.config.PostgresAuthDB, nil)
-		} else {
-			dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
-			container, err = sqlstore.New(context.Background(), "sqlite", dsn, nil)
+		dsn := fmt.Sprintf("file:%s/dbdata/main.db?_pragma=foreign_keys(1)&_busy_timeout=5000&cache=shared&mode=rwc&_journal_mode=WAL", w.exPath)
+		var dbLog waLog.Logger
+		if w.config.WaDebug != "" {
+			dbLog = waLog.Stdout("Database", w.config.WaDebug, true)
 		}
-	}
-
-	if err != nil {
-		w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to create container: %v", cd.Instance.Id, err)
-		return
+		container, err = sqlstore.New(context.Background(), "sqlite", dsn, dbLog)
+		if err != nil {
+			w.loggerWrapper.GetLogger(cd.Instance.Id).LogError("[%s] Failed to create SQLite container: %v", cd.Instance.Id, err)
+			return
+		}
 	}
 
 	if cd.Instance.Jid != "" {
@@ -3093,9 +3094,26 @@ func NewWhatsmeowService(
 	// Inicializar PollService de forma segura
 	pollSvc := poll_service.NewPollService(authDB, loggerWrapper)
 
+	// Share the already-open authDB pool with all whatsmeow device stores.
+	// This prevents a new database/sql pool from being created on every
+	// StartClient/reconnect cycle.
+	var authContainer *sqlstore.Container
+	if config.PostgresAuthDB != "" && authDB != nil {
+		var dbLog waLog.Logger
+		if config.WaDebug != "" {
+			dbLog = waLog.Stdout("Database", config.WaDebug, true)
+		}
+		authContainer = sqlstore.NewWithDB(authDB, "postgres", dbLog)
+		if err := authContainer.Upgrade(context.Background()); err != nil {
+			loggerWrapper.GetLogger("system").LogError("[DB] Failed to upgrade shared WhatsApp auth container: %v", err)
+			authContainer = nil
+		}
+	}
+
 	return &whatsmeowService{
 		instanceRepository: instanceRepository,
 		authDB:             authDB,
+		authContainer:      authContainer,
 		messageRepository:  messageRepository,
 		labelRepository:    labelRepository,
 		pollService:        pollSvc, // NOVO: Serviço de enquetes
